@@ -1,0 +1,145 @@
+import pandas as pd
+import numpy as np
+import networkx as nx
+import matplotlib.pyplot as plt
+import seaborn as sns
+import matplotlib.colors as mcolors
+from collections import deque
+
+d = 'abalone.csv'  # Dataset
+s = ';'  # Data separator
+m = 'spearman'  # Correlation method
+
+# Data preparation
+df = pd.read_csv(d, sep=s)
+corrmat = df.corr(method=m)
+np.fill_diagonal(corrmat.values, 0)
+
+print("Correlation Matrix:")
+print(corrmat)
+
+abs_corrmat = corrmat.abs()
+
+def visualize_tree_for_attribute(attribute, corrmat, abs_corrmat):
+    # Create the initial graph using absolute values for weights
+    G = nx.Graph()
+    for col1 in abs_corrmat.columns:
+        for col2 in abs_corrmat.columns:
+            if col1 != col2:
+                weight = abs_corrmat.at[col1, col2]
+                if weight > 0:  # Add only non-zero correlations
+                    G.add_edge(col1, col2, weight=weight)
+
+    def find_highest_avg_path(graph, start_node):
+        all_paths = {}
+        for target in graph.nodes:
+            if target != start_node:
+                paths = list(nx.all_simple_paths(graph, source=start_node, target=target))
+                max_avg_weight = -1
+                best_path = None
+                for path in paths:
+                    weights = [graph[path[n]][path[n+1]]['weight'] for n in range(len(path)-1)]
+                    avg_weight = np.mean(weights)
+                    if avg_weight > max_avg_weight:
+                        max_avg_weight = avg_weight
+                        best_path = path
+                if best_path:
+                    all_paths[target] = (best_path, max_avg_weight)
+        return all_paths
+
+    
+    paths = find_highest_avg_path(G, attribute)
+
+    # Graph setup
+    numbered_graph = nx.Graph()
+    node_mapping = {}
+    current_node = 0
+
+    root_node = current_node
+    numbered_graph.add_node(root_node, label=attribute)
+    node_mapping[root_node] = attribute
+    current_node += 1
+    
+    leaf_weights = {}
+    
+    def add_path_to_numbered_graph(path, weight):
+        nonlocal current_node
+        previous_node = root_node
+        for attr in path[1:]:
+            numbered_graph.add_node(current_node, label=attr)
+            node_mapping[current_node] = attr
+            numbered_graph.add_edge(previous_node, current_node)
+            previous_node = current_node
+            current_node += 1
+        leaf_weights[previous_node] = weight
+    
+    for target, (best_path, max_avg_weight) in paths.items():
+        add_path_to_numbered_graph(best_path, max_avg_weight)
+    
+    def layered_layout(graph, root, column_width=1.0):
+        pos = {}
+        layers = {}
+        queue = deque([(root, 0)])  # (node, layer)
+        
+        max_layer_nodes = 0
+        layer_nodes_count = {}
+
+        
+        while queue:
+            node, layer = queue.popleft()
+            if node not in layers:
+                layers[node] = layer
+                if layer not in pos:
+                    pos[layer] = []
+                pos[layer].append(node)
+                layer_nodes_count[layer] = layer_nodes_count.get(layer, 0) + 1
+                max_layer_nodes = max(max_layer_nodes, layer_nodes_count[layer])
+                for neighbor in graph.neighbors(node):
+                    if neighbor not in layers:
+                        queue.append((neighbor, layer + 1))
+        
+        total_layers = max(layers.values()) + 1
+        y_center = max_layer_nodes / 2
+        
+        pos_dict = {}
+        for layer, nodes in pos.items():
+            y_gap = len(nodes) / 2
+            for index, node in enumerate(nodes):
+                pos_dict[node] = (layer * column_width, y_center - (index - y_gap) * 1.5)  # Adjust vertical spacing
+
+        return pos_dict
+    
+    column_width = 1.0  # Adjust this value to increase or decrease the distance between columns
+    
+    layout = layered_layout(numbered_graph, root_node, column_width=column_width)
+
+    # Visualization
+    plt.figure(figsize=(15, 8))
+    #plt.title(f"Tree for Attribute: {attribute}")
+    # Draw edges
+    nx.draw_networkx_edges(numbered_graph, layout, width=1.5, edge_color='gray')
+    
+    edge_labels = {}
+    for u, v in numbered_graph.edges():
+        original_u = node_mapping[u]
+        original_v = node_mapping[v]
+        edge_labels[(u, v)] = round(corrmat.at[original_u, original_v], 2)
+
+    nx.draw_networkx_edge_labels(numbered_graph, layout, edge_labels=edge_labels, font_color='black', font_size=8)
+    
+    cmap = plt.get_cmap('summer')
+    colors = list(cmap(np.linspace(0.4, 1, current_node)))
+    
+    for node in numbered_graph.nodes():
+        node_label = numbered_graph.nodes[node]['label']
+        if node in leaf_weights:
+            node_label += f'\n$\\varphi$ = {leaf_weights[node]:.2f}'  # Append the max_avg_weight with LaTeX
+        nx.draw_networkx_nodes(numbered_graph, layout, nodelist=[node], node_color='white', node_size=200)
+        nx.draw_networkx_labels(numbered_graph, layout, labels={node: node_label}, font_size=10, font_color='black', 
+                                bbox=dict(facecolor=colors[node], edgecolor='black', boxstyle='round,pad=0.3'))
+
+    plt.savefig(f"tree_{attribute}.png", dpi=1200)
+
+# Loop through all attributes and generate the forest
+for attribute in df.columns:
+    visualize_tree_for_attribute(attribute, corrmat, abs_corrmat)
